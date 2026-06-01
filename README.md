@@ -226,6 +226,15 @@ Analisis didasarkan pada **% Angka Kecukupan Gizi (AKG)** harian yang disesuaika
 
 ---
 
+<iframe 
+  src="https://drive.google.com/file/d/1OgK3ieI7e-v-M9r-Y9AN1-Yo9KPTCx73/preview" 
+  width="640" 
+  height="360" 
+  allow="autoplay"
+  allowfullscreen>
+</iframe>
+
+---
 ## 📄 Lisensi
 
 MIT License — dibuat untuk keperluan pembelajaran Pengembangan Aplikasi Mobile ITERA.
