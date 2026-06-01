@@ -56,7 +56,8 @@ class ProfileViewModel(
         viewModelScope.launch {
             getProfileUseCase().collect { profile ->
                 if (profile != null) {
-                    // Hanya update dari flow DB kalau sedang tidak dalam proses edit/save aktif
+                    // Skip update dari DB hanya saat sedang Editing (agar form tidak di-reset)
+                    // Saat Saving, biarkan onSuccess di saveProfile() yang handle transisi
                     if (_uiState.value !is ProfileUiState.Editing) {
                         _uiState.value = ProfileUiState.Viewing(profile)
                     }
@@ -145,9 +146,8 @@ class ProfileViewModel(
 
             updateProfileUseCase(updated)
                 .onSuccess  {
-                    // Langsung pindah ke Viewing dengan data terbaru,
-                    // tidak perlu menunggu flow DB — flow guard di init
-                    // memblokir update saat state masih Saving.
+                    // Langsung pindah ke Viewing dengan data terbaru.
+                    // Tidak menunggu flow DB — flow di init diblokir saat Saving.
                     _uiState.value = ProfileUiState.Viewing(updated)
                 }
                 .onFailure  { e ->
