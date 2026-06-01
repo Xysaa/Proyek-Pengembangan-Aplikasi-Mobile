@@ -3,9 +3,6 @@ package com.example.nutriscan.domain.repository
 import com.example.nutriscan.domain.model.Product
 
 interface ProductRepository {
-    /**
-     * Fetch product by barcode.
-     * Strategy: local cache (ScanHistory) → OpenFoodFacts API → dummy fallback.
-     */
-    suspend fun getProductByBarcode(barcode: String): Result<Product>
+    /** Fetch product details for [barcode] from the remote food database. */
+    suspend fun getProduct(barcode: String): Result<Product>
 }
