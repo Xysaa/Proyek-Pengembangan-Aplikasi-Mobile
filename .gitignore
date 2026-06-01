@@ -9,7 +9,7 @@ build/
 *.ipr
 *.iws
 out/
-
+keystore
 # Kotlin
 .kotlin/
 
