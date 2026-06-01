@@ -2,127 +2,142 @@ package com.example.nutriscan.presentation.screens.home
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.nutriscan.domain.model.Note
-import com.example.nutriscan.domain.model.NoteCategory
-import com.example.nutriscan.domain.repository.NoteRepository
-import com.example.nutriscan.domain.usecase.DeleteNoteUseCase
-import com.example.nutriscan.domain.usecase.GetAllNotesUseCase
-import com.example.nutriscan.domain.usecase.NoteSortBy
-import com.example.nutriscan.domain.usecase.SearchNotesUseCase
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.MutableStateFlow
+import com.example.nutriscan.domain.model.ConsumptionEntry
+import com.example.nutriscan.domain.model.NutritionStatus
+import com.example.nutriscan.domain.model.ScanResult
+import com.example.nutriscan.domain.model.UserProfile
+import com.example.nutriscan.domain.repository.ConsumptionRepository
+import com.example.nutriscan.domain.repository.ScanHistoryRepository
+import com.example.nutriscan.domain.repository.SessionRepository
+import com.example.nutriscan.domain.repository.UserProfileRepository
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
+import kotlinx.datetime.Clock
+import kotlinx.datetime.DateTimeUnit
+import kotlinx.datetime.DayOfWeek
+import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.minus
+import kotlinx.datetime.todayIn
+import kotlinx.datetime.toLocalDateTime
 
-@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
-class HomeViewModel(
-    private val getAllNotesUseCase: GetAllNotesUseCase,
-    private val searchNotesUseCase: SearchNotesUseCase,
-    private val deleteNoteUseCase: DeleteNoteUseCase,
-    private val repository: NoteRepository
-) : ViewModel() {
-    
-    private val _searchQuery = MutableStateFlow("")
-    private val _selectedCategory = MutableStateFlow<NoteCategory?>(null)
-    private val _sortBy = MutableStateFlow(NoteSortBy.UPDATED_DESC)
-    private val _isLoading = MutableStateFlow(false)
-    
-    private val debouncedSearchQuery = _searchQuery.debounce(300)
-    
-    val sortBy: StateFlow<NoteSortBy> = _sortBy
-    
-    val uiState: StateFlow<HomeUiState> = combine(
-        debouncedSearchQuery,
-        _selectedCategory,
-        _sortBy
-    ) { query, category, sortBy ->
-        Triple(query, category, sortBy)
-    }.flatMapLatest { (query, category, sortBy) ->
-        if (query.isBlank() && category == null) {
-            getAllNotesUseCase(sortBy)
-        } else {
-            searchNotesUseCase(query, category)
-        }
-    }.combine(_isLoading) { notes, isLoading ->
-        when {
-            isLoading -> HomeUiState.Loading
-            notes.isEmpty() -> HomeUiState.Empty(
-                query = _searchQuery.value,
-                category = _selectedCategory.value
-            )
-            else -> HomeUiState.Success(
-                notes = notes,
-                query = _searchQuery.value,
-                category = _selectedCategory.value,
-                sortBy = _sortBy.value
-            )
-        }
-    }.catch { e ->
-        emit(HomeUiState.Error(e.message ?: "Terjadi kesalahan"))
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = HomeUiState.Loading
-    )
-    
-    // ==================== USER ACTIONS ====================
-    
-    fun onSearchQueryChange(query: String) {
-        _searchQuery.value = query
-    }
-    
-    fun clearSearch() {
-        _searchQuery.value = ""
-    }
-    
-    fun onCategorySelected(category: NoteCategory?) {
-        _selectedCategory.value = category
-    }
-    
-    fun onSortByChanged(sortBy: NoteSortBy) {
-        _sortBy.value = sortBy
-    }
-    
-    fun togglePin(noteId: Long) {
-        viewModelScope.launch {
-            repository.togglePinNote(noteId)
-        }
-    }
-    
-    fun deleteNote(noteId: Long) {
-        viewModelScope.launch {
-            deleteNoteUseCase(noteId)
-        }
-    }
-    
-    fun deleteNotes(noteIds: List<Long>) {
-        viewModelScope.launch {
-            repository.deleteNotes(noteIds)
-        }
-    }
+// ==================== UI STATE ====================
+
+/** A day's calorie total for the weekly chart. */
+data class DayCalories(val label: String, val calories: Float, val isToday: Boolean)
+
+data class HomeDashboard(
+    val userName: String = "",
+    val profile: UserProfile? = null,
+    val recentScans: List<ScanResult> = emptyList(),
+    val totalScans: Int = 0,
+    val todayCalories: Float = 0f,
+    val todaySugar: Float = 0f,
+    val todaySodium: Float = 0f,
+    val todayFat: Float = 0f,
+    val todayProtein: Float = 0f,
+    val calorieTarget: Float = 2000f,
+    val weekly: List<DayCalories> = emptyList(),
+    val todayEntries: List<ConsumptionEntry> = emptyList(),
+    val safeCount: Int = 0,
+    val cautionCount: Int = 0,
+    val avoidCount: Int = 0
+) {
+    val calorieProgress: Float
+        get() = if (calorieTarget > 0f) (todayCalories / calorieTarget) else 0f
 }
 
 sealed interface HomeUiState {
     data object Loading : HomeUiState
-    
-    data class Success(
-        val notes: List<Note>,
-        val query: String = "",
-        val category: NoteCategory? = null,
-        val sortBy: NoteSortBy = NoteSortBy.UPDATED_DESC
-    ) : HomeUiState
-    
-    data class Empty(
-        val query: String = "",
-        val category: NoteCategory? = null
-    ) : HomeUiState
-    
+    data class Ready(val dashboard: HomeDashboard) : HomeUiState
     data class Error(val message: String) : HomeUiState
+}
+
+// ==================== VIEWMODEL ====================
+
+class HomeViewModel(
+    private val scanHistoryRepository: ScanHistoryRepository,
+    private val userProfileRepository: UserProfileRepository,
+    private val sessionRepository: SessionRepository,
+    private val consumptionRepository: ConsumptionRepository
+) : ViewModel() {
+
+    val uiState: StateFlow<HomeUiState> = combine(
+        scanHistoryRepository.getAllHistory(),
+        userProfileRepository.getProfile(),
+        sessionRepository.state,
+        consumptionRepository.observeAll()
+    ) { scans, profile, session, consumption ->
+        HomeUiState.Ready(buildDashboard(scans, profile, session.userName, consumption)) as HomeUiState
+    }
+        .catch { e -> emit(HomeUiState.Error(e.message ?: "Terjadi kesalahan")) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = HomeUiState.Loading
+        )
+
+    private fun buildDashboard(
+        scans: List<ScanResult>,
+        profile: UserProfile?,
+        userName: String,
+        consumption: List<ConsumptionEntry>
+    ): HomeDashboard {
+        val tz = TimeZone.currentSystemDefault()
+        val today = Clock.System.todayIn(tz)
+
+        fun dateOf(epoch: Long): LocalDate =
+            Instant.fromEpochMilliseconds(epoch).toLocalDateTime(tz).date
+
+        // ── Today's consumed nutrition (sum over today's consumption entries) ──
+        val todayEntries = consumption.filter { it.consumedAt != 0L && dateOf(it.consumedAt) == today }
+        var cal = 0f; var sugar = 0f; var sodium = 0f; var fat = 0f; var protein = 0f
+        todayEntries.forEach {
+            cal += it.calories; sugar += it.sugar; sodium += it.sodium; fat += it.fat; protein += it.protein
+        }
+
+        // ── Weekly calories (oldest -> newest) from consumption ──
+        val weekly = (6 downTo 0).map { offset ->
+            val day = today.minus(offset, DateTimeUnit.DAY)
+            val dayCalories = consumption
+                .filter { it.consumedAt != 0L && dateOf(it.consumedAt) == day }
+                .sumOf { it.calories.toDouble() }
+                .toFloat()
+            DayCalories(label = day.dayOfWeek.shortId(), calories = dayCalories, isToday = offset == 0)
+        }
+
+        return HomeDashboard(
+            userName = profile?.name?.takeIf { it.isNotBlank() }
+                ?: userName.ifBlank { "Pengguna" },
+            profile = profile,
+            recentScans = scans.take(5),
+            totalScans = scans.size,
+            todayCalories = cal,
+            todaySugar = sugar,
+            todaySodium = sodium,
+            todayFat = fat,
+            todayProtein = protein,
+            calorieTarget = profile?.dailyCalorieNeed?.takeIf { it > 0f } ?: 2000f,
+            weekly = weekly,
+            todayEntries = todayEntries,
+            safeCount = scans.count { it.analysis.overallStatus == NutritionStatus.SAFE },
+            cautionCount = scans.count { it.analysis.overallStatus == NutritionStatus.CAUTION },
+            avoidCount = scans.count { it.analysis.overallStatus == NutritionStatus.AVOID }
+        )
+    }
+}
+
+private fun DayOfWeek.shortId(): String = when (this) {
+    DayOfWeek.MONDAY -> "Sen"
+    DayOfWeek.TUESDAY -> "Sel"
+    DayOfWeek.WEDNESDAY -> "Rab"
+    DayOfWeek.THURSDAY -> "Kam"
+    DayOfWeek.FRIDAY -> "Jum"
+    DayOfWeek.SATURDAY -> "Sab"
+    DayOfWeek.SUNDAY -> "Min"
+    else -> "?"
 }
