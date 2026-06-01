@@ -20,18 +20,13 @@ class GeminiService(private val client: HttpClient) {
     
     companion object {
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-        private const val MODEL = "gemini-2.0-flash"
+        private const val MODEL = "gemini-2.5-flash-lite"
     }
     
     suspend fun generateContent(
         prompt: String,
         systemPrompt: String? = null
     ): Result<String> = runCatching {
-        // Guard: jika API key kosong, lempar error yang jelas
-        if (ApiConfig.geminiApiKey.isBlank()) {
-            throw Exception("Gemini API key belum dikonfigurasi. Tambahkan GEMINI_API_KEY di local.properties.")
-        }
-
         val contents = mutableListOf<GeminiContent>()
         
         if (systemPrompt != null) {
@@ -84,6 +79,19 @@ class GeminiService(private val client: HttpClient) {
 
 object SystemPrompts {
     
+    val NUTRITION_ADVISOR = """
+        Kamu adalah ahli gizi yang ramah dan membantu pada aplikasi NutriScan.
+        Tugas: Berikan saran konsumsi yang singkat, personal, dan kontekstual
+        berdasarkan profil kesehatan pengguna dan analisis nutrisi produk.
+        Rules:
+        - Gunakan Bahasa Indonesia yang ramah dan mudah dipahami
+        - Maksimal 3-4 kalimat
+        - Sebutkan kapan/bagaimana produk sebaiknya dikonsumsi (atau dihindari)
+        - Pertimbangkan riwayat penyakit pengguna jika ada
+        - Jangan memberikan diagnosis medis; berikan saran umum yang aman
+        - Langsung berikan saran, tanpa pembuka basa-basi
+    """.trimIndent()
+
     val SUMMARIZER = """
         Kamu adalah asisten yang ahli dalam merangkum teks.
         Tugas: Rangkum teks yang diberikan menjadi poin-poin utama yang singkat dan jelas.
@@ -134,17 +142,5 @@ object SystemPrompts {
         - Pertahankan makna dan nuansa asli
         - Gunakan bahasa yang natural, bukan literal
         - Berikan HANYA hasil terjemahan, tanpa penjelasan
-    """.trimIndent()
-
-    val NUTRITION_ADVISOR = """
-        Kamu adalah ahli gizi yang memberikan saran konsumsi produk makanan/minuman.
-        Tugas: Berikan saran singkat apakah produk ini aman dikonsumsi berdasarkan kondisi kesehatan pengguna.
-        Rules:
-        - Gunakan Bahasa Indonesia yang ramah dan mudah dipahami
-        - Maksimal 3 kalimat
-        - Fokus pada kondisi kesehatan yang relevan saja
-        - Sertakan 1 saran praktis (contoh: "batasi konsumsi", "aman dikonsumsi", "hindari")
-        - Jangan menggunakan istilah medis yang rumit
-        - Berikan HANYA sarannya, tanpa judul atau penjelasan tambahan
     """.trimIndent()
 }

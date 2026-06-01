@@ -1,51 +1,81 @@
 package com.example.nutriscan.data.remote.api
 
-import com.example.nutriscan.data.remote.dto.OpenFoodFactsResponse
-import com.example.nutriscan.data.remote.dto.toDomain
+import com.example.nutriscan.data.remote.dto.OffResponse
+import com.example.nutriscan.domain.model.Nutriments
 import com.example.nutriscan.domain.model.Product
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.parameter
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
 
 /**
- * Fetches product data from the OpenFoodFacts v2 API.
- *
- * Endpoint : GET https://world.openfoodfacts.org/api/v2/product/{barcode}.json
- * Fields   : hanya field yang kita pakai (product_name*, brands, image_front_small_url,
- *             serving_size, dan nutriments yang relevan).
- *
- * Filtering via ?fields= mengurangi payload dari ~200KB → ~2KB per produk.
+ * Fetches product data from the free OpenFoodFacts database.
+ * No API key is required for reasonable usage.
  */
 class OpenFoodFactsService(private val client: HttpClient) {
 
     companion object {
-        private const val BASE_URL = "https://world.openfoodfacts.org/api/v2/product"
-
-        // Hanya minta field yang kita butuhkan
-        private const val FIELDS =
-            "code,product_name,product_name_id,product_name_en,brands," +
-            "image_front_small_url,image_url,serving_size," +
-            "nutriments.energy-kcal_100g,nutriments.energy-kcal," +
-            "nutriments.fat_100g,nutriments.saturated-fat_100g," +
-            "nutriments.carbohydrates_100g,nutriments.sugars_100g," +
-            "nutriments.sodium_100g,nutriments.salt_100g,nutriments.proteins_100g"
+        private const val BASE_URL = "https://world.openfoodfacts.org/api/v2"
+        private const val FIELDS = "product_name,brands,image_url,image_front_url,serving_size,nutriments"
     }
 
-    /**
-     * @return Result.success(Product) jika barcode ditemukan dan data valid,
-     *         Result.failure jika 404 / status != 1 / network error.
-     */
-    suspend fun fetchProduct(barcode: String): Result<Product> = runCatching {
-        val response: OpenFoodFactsResponse = client.get("$BASE_URL/$barcode.json") {
-            header("User-Agent", "NutriScan-KMP/1.0 (contact@example.com)")
-            url { parameters.append("fields", FIELDS) }
+    /** Returns the mapped [Product], or null if the barcode is unknown. */
+    suspend fun getProduct(barcode: String): Product? {
+        val response: OffResponse = client.get("$BASE_URL/product/$barcode.json") {
+            parameter("fields", FIELDS)
+            // OFF recommends identifying the app via User-Agent.
+            header("User-Agent", "NutriScan/1.0 (Android; KMP demo)")
         }.body()
 
-        if (response.status != 1 || response.product == null) {
-            throw Exception("Produk dengan barcode $barcode tidak ditemukan di database")
+        val product = response.product ?: return null
+        if (response.status != 1) return null
+
+        val n = product.nutriments
+
+        // OFF stores sodium in grams/100g; our model uses mg. Fall back to salt.
+        val sodiumMg: Float = run {
+            val sodium = n.readDouble("sodium_100g")
+            when {
+                sodium != null && sodium > 0.0 -> (sodium * 1000.0).toFloat()
+                else -> {
+                    val salt = n.readDouble("salt_100g")
+                    if (salt != null && salt > 0.0) ((salt / 2.5) * 1000.0).toFloat() else 0f
+                }
+            }
         }
 
-        response.product.toDomain(barcode)
+        return Product(
+            barcode = barcode,
+            name = product.productName?.takeIf { it.isNotBlank() } ?: "Produk Tidak Dikenal",
+            brand = product.brands?.takeIf { it.isNotBlank() }?.substringBefore(",")?.trim() ?: "",
+            imageUrl = (product.imageUrl ?: product.imageFrontUrl).orEmpty(),
+            servingSize = parseServingSize(product.servingSize),
+            nutriments = Nutriments(
+                calories = n.readFloat("energy-kcal_100g"),
+                fat = n.readFloat("fat_100g"),
+                saturatedFat = n.readFloat("saturated-fat_100g"),
+                sugar = n.readFloat("sugars_100g"),
+                sodium = sodiumMg,
+                protein = n.readFloat("proteins_100g"),
+                carbs = n.readFloat("carbohydrates_100g")
+            )
+        )
+    }
+
+    private fun JsonObject?.readDouble(key: String): Double? =
+        (this?.get(key) as? JsonPrimitive)?.doubleOrNull
+
+    private fun JsonObject?.readFloat(key: String): Float =
+        readDouble(key)?.toFloat() ?: 0f
+
+    /** Extract the first numeric value from a serving string like "30 g". */
+    private fun parseServingSize(raw: String?): Float {
+        if (raw.isNullOrBlank()) return 100f
+        val match = Regex("""\d+([.,]\d+)?""").find(raw) ?: return 100f
+        return match.value.replace(',', '.').toFloatOrNull()?.takeIf { it > 0f } ?: 100f
     }
 }
