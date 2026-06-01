@@ -1,8 +1,7 @@
 package com.example.nutriscan.presentation.screens.result
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,55 +13,72 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.AutoAwesome
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Fastfood
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
-import coil3.compose.AsyncImage
+import com.example.nutriscan.core.util.format1
+import com.example.nutriscan.domain.model.ConsumptionEntry
 import com.example.nutriscan.domain.model.NutritionAnalysis
 import com.example.nutriscan.domain.model.Product
 import com.example.nutriscan.domain.model.ScanResult
 import com.example.nutriscan.domain.model.UserProfile
 import com.example.nutriscan.domain.repository.AIRepository
+import com.example.nutriscan.domain.repository.ConsumptionRepository
 import com.example.nutriscan.domain.repository.ProductRepository
 import com.example.nutriscan.domain.repository.ScanHistoryRepository
 import com.example.nutriscan.domain.repository.UserProfileRepository
 import com.example.nutriscan.domain.usecase.AnalyzeNutritionUseCase
-import com.example.nutriscan.presentation.components.ErrorMessage
+import com.example.nutriscan.presentation.components.AlertType
+import com.example.nutriscan.presentation.components.GradientButton
+import com.example.nutriscan.presentation.components.GradientHeader
 import com.example.nutriscan.presentation.components.LoadingIndicator
 import com.example.nutriscan.presentation.components.NutrientBar
-import com.example.nutriscan.presentation.components.StatusChip
+import com.example.nutriscan.presentation.components.SoftCard
+import com.example.nutriscan.presentation.components.StatusBadgeLarge
+import com.example.nutriscan.presentation.components.SweetAlertDialog
+import com.example.nutriscan.presentation.theme.AppGradients
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
 import org.koin.compose.viewmodel.koinViewModel
 import org.koin.core.parameter.parametersOf
+import androidx.compose.ui.graphics.Color
+import kotlin.math.roundToInt
 
-// ==================== UI STATE ====================
+// ==================== UI STATE + VIEWMODEL ====================
+
+/** Status of the AI advice request, shown below the analysis. */
+sealed interface AiAdviceState {
+    data object Idle : AiAdviceState
+    data object Loading : AiAdviceState
+    data class Success(val advice: String) : AiAdviceState
+    data class Error(val message: String) : AiAdviceState
+}
 
 sealed interface ResultUiState {
     data object Loading : ResultUiState
@@ -70,13 +86,11 @@ sealed interface ResultUiState {
         val product: Product,
         val profile: UserProfile,
         val analysis: NutritionAnalysis,
-        val isAiLoading: Boolean = false     // saran AI masih dimuat
+        val ai: AiAdviceState = AiAdviceState.Idle
     ) : ResultUiState
     data class NoProfile(val barcode: String) : ResultUiState
     data class Error(val message: String) : ResultUiState
 }
-
-// ==================== VIEWMODEL ====================
 
 class ResultViewModel(
     private val barcode: String,
@@ -84,67 +98,101 @@ class ResultViewModel(
     private val scanHistoryRepository: ScanHistoryRepository,
     private val productRepository: ProductRepository,
     private val analyzeNutritionUseCase: AnalyzeNutritionUseCase,
-    private val aiRepository: AIRepository
+    private val aiRepository: AIRepository,
+    private val consumptionRepository: ConsumptionRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<ResultUiState>(ResultUiState.Loading)
     val uiState: StateFlow<ResultUiState> = _uiState.asStateFlow()
+
+    /** One-shot signal: set to the logged label after a successful consume,
+     *  consumed by the screen to show a success popup, then cleared. */
+    private val _consumedLabel = MutableStateFlow<String?>(null)
+    val consumedLabel: StateFlow<String?> = _consumedLabel.asStateFlow()
 
     init { loadResult() }
 
     private fun loadResult() {
         viewModelScope.launch {
             try {
-                // 1. Cek profil
                 val profile = userProfileRepository.getProfile().first()
                 if (profile == null) {
                     _uiState.value = ResultUiState.NoProfile(barcode)
                     return@launch
                 }
 
-                // 2. Fetch produk (cache lokal → OpenFoodFacts API → dummy fallback)
-                val product = productRepository.getProductByBarcode(barcode).getOrThrow()
-
-                // 3. Analisis nutrisi lokal (selalu hitung ulang, pakai data profil terkini)
-                val analysis = analyzeNutritionUseCase(product, profile)
-
-                // 4. Tampilkan hasil segera, AI suggestion menyusul
-                _uiState.value = ResultUiState.Success(
-                    product     = product,
-                    profile     = profile,
-                    analysis    = analysis,
-                    isAiLoading = true
-                )
-
-                // 5. Simpan ke history
-                scanHistoryRepository.saveScan(
-                    ScanResult(
-                        product   = product,
-                        analysis  = analysis,
-                        scannedAt = Clock.System.now().toEpochMilliseconds()
-                    )
-                )
-
-                // 6. Minta saran AI — selalu dipanggil, tidak peduli dari cache atau API
-                val aiResult     = aiRepository.analyzeNutrition(product, profile)
-                val aiSuggestion = aiResult.getOrNull()
-                // Tampilkan pesan error Gemini ke user jika gagal (bukan diam-diam null)
-                val aiError      = if (aiSuggestion == null) aiResult.exceptionOrNull()?.message else null
-
-                _uiState.update { current ->
-                    if (current is ResultUiState.Success) {
-                        current.copy(
-                            analysis    = current.analysis.copy(
-                                aiSuggestion = aiSuggestion ?: aiError?.let { "⚠️ $it" }
-                            ),
-                            isAiLoading = false
-                        )
-                    } else current
+                // Use cached scan (offline-first) if we've seen this barcode before.
+                val cached = scanHistoryRepository.getScanByBarcode(barcode)
+                if (cached != null) {
+                    // Recompute the analysis so the full nutrient breakdown
+                    // (allNutrients) is present — the cached row only stores the
+                    // overall status, not the per-nutrient detail.
+                    val analysis = analyzeNutritionUseCase(cached.product, profile)
+                    _uiState.value = ResultUiState.Success(cached.product, profile, analysis)
+                    fetchAiAdvice(cached.product, profile, analysis)
+                    return@launch
                 }
 
+                // Fetch real product data from OpenFoodFacts.
+                val product = productRepository.getProduct(barcode).getOrElse { e ->
+                    _uiState.value = ResultUiState.Error(
+                        e.message ?: "Gagal memuat produk. Periksa koneksi internet Anda."
+                    )
+                    return@launch
+                }
+
+                val analysis = analyzeNutritionUseCase(product, profile)
+                _uiState.value = ResultUiState.Success(product, profile, analysis)
+
+                // Persist to history (offline-first cache).
+                runCatching {
+                    scanHistoryRepository.saveScan(ScanResult(product = product, analysis = analysis))
+                }
+
+                fetchAiAdvice(product, profile, analysis)
             } catch (e: Exception) {
                 _uiState.value = ResultUiState.Error(e.message ?: "Terjadi kesalahan")
             }
+        }
+    }
+
+    private fun fetchAiAdvice(product: Product, profile: UserProfile, analysis: NutritionAnalysis) {
+        setAi(AiAdviceState.Loading)
+        viewModelScope.launch {
+            val productSummary = buildString {
+                val n = product.nutrimentsPerServing
+                append("${product.displayName} (${product.brand.ifBlank { "tanpa merek" }}), ")
+                append("per sajian ${product.servingSize.roundToInt()}g: ")
+                append("${n.calories.roundToInt()} kkal, gula ${n.sugar.roundToInt()}g, ")
+                append("garam ${n.sodium.roundToInt()}mg, lemak ${n.fat.roundToInt()}g, ")
+                append("protein ${n.protein.roundToInt()}g, karbo ${n.carbs.roundToInt()}g")
+            }
+            val profileSummary = buildString {
+                append("${profile.name}, usia ${profile.age}, BMI ${formatBmi(profile.bmi)} (${profile.bmiCategory})")
+                if (profile.healthConditions.isNotEmpty()) {
+                    append(", riwayat: ${profile.healthConditions.joinToString { it.displayName }}")
+                }
+            }
+            val analysisSummary = buildString {
+                append("Status keseluruhan: ${analysis.overallStatus.displayName}. ")
+                if (analysis.warningMessages.isNotEmpty()) {
+                    append("Catatan: ${analysis.warningMessages.joinToString("; ")}")
+                } else {
+                    append("Tidak ada peringatan nutrisi yang signifikan.")
+                }
+            }
+
+            aiRepository.nutritionAdvice(productSummary, profileSummary, analysisSummary)
+                .onSuccess { advice -> setAi(AiAdviceState.Success(advice)) }
+                .onFailure { e ->
+                    setAi(AiAdviceState.Error(e.message ?: "Saran AI tidak tersedia saat ini."))
+                }
+        }
+    }
+
+    private fun setAi(state: AiAdviceState) {
+        _uiState.update { current ->
+            if (current is ResultUiState.Success) current.copy(ai = state) else current
         }
     }
 
@@ -152,265 +200,355 @@ class ResultViewModel(
         _uiState.value = ResultUiState.Loading
         loadResult()
     }
+
+    fun retryAi() {
+        val current = _uiState.value
+        if (current is ResultUiState.Success) {
+            fetchAiAdvice(current.product, current.profile, current.analysis)
+        }
+    }
+
+    /** Log a consumption entry to the daily log (drives Beranda totals). */
+    fun consume(entry: ConsumptionEntry) {
+        viewModelScope.launch {
+            runCatching { consumptionRepository.add(entry) }
+                .onSuccess { _consumedLabel.value = entry.amountLabel }
+        }
+    }
+
+    fun clearConsumedSignal() { _consumedLabel.value = null }
+}
+
+private fun formatBmi(value: Float): String {
+    val rounded = (value * 10).roundToInt() / 10.0
+    return if (rounded % 1.0 == 0.0) rounded.toInt().toString() else rounded.toString()
 }
 
 // ==================== SCREEN ====================
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ResultScreen(
     barcode: String,
     onNavigateBack: () -> Unit,
-    onNavigateToProfile: () -> Unit,
     viewModel: ResultViewModel = koinViewModel(parameters = { parametersOf(barcode) })
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val consumedLabel by viewModel.consumedLabel.collectAsStateWithLifecycle()
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Hasil Scan") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Kembali")
-                    }
-                }
-            )
-        }
-    ) { padding ->
+    // Popups shown over the screen content.
+    var showConsumeDialog by remember { mutableStateOf(false) }
+    var showStatusInfo by remember { mutableStateOf(false) }
+
+    // Auto-show the status popup once the product is successfully loaded.
+    val successState = uiState as? ResultUiState.Success
+    LaunchedEffect(successState?.product?.barcode) {
+        if (successState != null) showStatusInfo = true
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        GradientHeader(
+            title = "Hasil Scan",
+            subtitle = "Analisis nutrisi produk",
+            onBack = onNavigateBack
+        )
+
         when (val state = uiState) {
             is ResultUiState.Loading -> LoadingIndicator()
 
-            is ResultUiState.NoProfile -> NoProfileContent(
-                modifier = Modifier.padding(padding),
-                onGoToProfile = onNavigateToProfile
-            )
+            is ResultUiState.NoProfile -> NoProfileContent()
 
-            is ResultUiState.Error -> ErrorMessage(
-                message  = state.message,
-                modifier = Modifier.padding(padding),
-                onRetry  = viewModel::retry
-            )
+            // Error is surfaced as a SweetAlert popup (see below); keep a calm
+            // placeholder behind it.
+            is ResultUiState.Error -> Box(modifier = Modifier.fillMaxSize())
 
             is ResultUiState.Success -> ResultContent(
-                product     = state.product,
-                profile     = state.profile,
-                analysis    = state.analysis,
-                isAiLoading = state.isAiLoading,
-                modifier    = Modifier.padding(padding)
+                product = state.product,
+                profile = state.profile,
+                analysis = state.analysis,
+                ai = state.ai,
+                onRetryAi = viewModel::retryAi,
+                onConsumeClick = { showConsumeDialog = true }
             )
         }
     }
+
+    // ── Error popup ──────────────────────────────────────────────────────────
+    (uiState as? ResultUiState.Error)?.let { err ->
+        SweetAlertDialog(
+            type = AlertType.ERROR,
+            title = "Produk Tidak Ditemukan",
+            message = err.message,
+            confirmText = "Coba Lagi",
+            onConfirm = viewModel::retry,
+            dismissText = "Kembali",
+            onDismiss = onNavigateBack
+        )
+    }
+
+    // ── Status popup (success / warning) on load ───────────────────────────────
+    if (showStatusInfo && successState != null) {
+        val analysis = successState.analysis
+        val (type, title, message) = statusAlert(successState.product.displayName, analysis)
+        SweetAlertDialog(
+            type = type,
+            title = title,
+            message = message,
+            confirmText = "Mengerti",
+            onConfirm = { showStatusInfo = false }
+        )
+    }
+
+    // ── Consumption dialog ─────────────────────────────────────────────────────
+    if (showConsumeDialog && successState != null) {
+        ConsumptionDialog(
+            product = successState.product,
+            onDismiss = { showConsumeDialog = false },
+            onConfirm = { entry ->
+                showConsumeDialog = false
+                viewModel.consume(entry)
+            }
+        )
+    }
+
+    // ── Consumed success popup ──────────────────────────────────────────────────
+    consumedLabel?.let { label ->
+        SweetAlertDialog(
+            type = AlertType.SUCCESS,
+            title = "Tercatat!",
+            message = "$label ditambahkan ke konsumsi harianmu. Lihat ringkasannya di Beranda.",
+            confirmText = "Selesai",
+            onConfirm = viewModel::clearConsumedSignal
+        )
+    }
 }
 
-// ── No Profile ────────────────────────────────────────────────────────────────
+/** Map an analysis result to the status popup's type/title/message. */
+private fun statusAlert(
+    productName: String,
+    analysis: NutritionAnalysis
+): Triple<AlertType, String, String> = when (analysis.overallStatus) {
+    com.example.nutriscan.domain.model.NutritionStatus.SAFE -> Triple(
+        AlertType.SUCCESS,
+        "Aman Dikonsumsi",
+        "$productName tergolong aman sesuai profil kesehatanmu. Tetap perhatikan porsinya ya!"
+    )
+    com.example.nutriscan.domain.model.NutritionStatus.CAUTION -> Triple(
+        AlertType.WARNING,
+        "Perlu Perhatian",
+        analysis.warningMessages.firstOrNull()
+            ?: "$productName perlu diperhatikan. Batasi porsinya agar tetap sesuai kebutuhan harianmu."
+    )
+    com.example.nutriscan.domain.model.NutritionStatus.AVOID -> Triple(
+        AlertType.ERROR,
+        "Sebaiknya Dihindari",
+        analysis.warningMessages.firstOrNull()
+            ?: "$productName sebaiknya dihindari sesuai kondisi kesehatanmu."
+    )
+}
 
 @Composable
-private fun NoProfileContent(
-    onGoToProfile: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+private fun NoProfileContent() {
     Column(
-        modifier            = modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(28.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(
-            Icons.Outlined.Person,
+            Icons.Filled.Person,
             contentDescription = null,
-            modifier           = Modifier.size(64.dp),
-            tint               = MaterialTheme.colorScheme.primary
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(64.dp)
         )
         Spacer(Modifier.height(16.dp))
-        Text("Profil diperlukan untuk analisis", style = MaterialTheme.typography.titleMedium)
+        Text("Profil diperlukan", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Lengkapi profil Anda agar NutriScan bisa memberikan analisis yang dipersonalisasi.",
+            "Lengkapi profil agar NutriScan bisa memberi analisis yang dipersonalisasi.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(24.dp))
-        androidx.compose.material3.Button(onClick = onGoToProfile) {
-            Text("Lengkapi Profil")
-        }
     }
 }
-
-// ── Result Content ────────────────────────────────────────────────────────────
 
 @Composable
 private fun ResultContent(
     product: Product,
     profile: UserProfile,
     analysis: NutritionAnalysis,
-    isAiLoading: Boolean,
-    modifier: Modifier = Modifier
+    ai: AiAdviceState,
+    onRetryAi: () -> Unit,
+    onConsumeClick: () -> Unit
 ) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // ── Gambar produk ────────────────────────────────────────────────────
-        if (product.imageUrl.isNotBlank()) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                AsyncImage(
-                    model             = product.imageUrl,
-                    contentDescription = product.displayName,
-                    contentScale      = ContentScale.Fit,
-                    modifier          = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp)
-                )
-            }
-        }
-
-        // ── Header produk ────────────────────────────────────────────────────
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(product.displayName, style = MaterialTheme.typography.titleLarge)
-                if (product.brand.isNotBlank()) {
-                    Text(
-                        product.brand,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+        // Product header
+        SoftCard(modifier = Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Filled.Fastfood, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 }
-                Text(
-                    "Barcode: ${product.barcode}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        // ── Status keseluruhan ───────────────────────────────────────────────
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors   = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer
-            )
-        ) {
-            Row(
-                modifier              = Modifier.fillMaxWidth().padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment     = Alignment.CenterVertically
-            ) {
-                Column {
+                Spacer(Modifier.size(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(product.displayName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    if (product.brand.isNotBlank()) {
+                        Text(product.brand, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     Text(
-                        "Status untuk ${profile.name}",
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    Text(
-                        "Per sajian ${product.servingSize.toInt()}g",
+                        "Barcode: ${product.barcode}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                StatusChip(status = analysis.overallStatus)
             }
         }
 
-        // ── Detail nutrisi ───────────────────────────────────────────────────
-        if (analysis.warnings.isNotEmpty()) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier            = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text("Detail Nutrisi", style = MaterialTheme.typography.titleSmall)
-                    analysis.warnings.forEach { warning ->
+        // Overall status
+        SoftCard(
+            modifier = Modifier.fillMaxWidth(),
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Status untuk ${profile.name}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Per sajian ${product.servingSize.format1()}g",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                StatusBadgeLarge(status = analysis.overallStatus)
+            }
+        }
+
+        // Consume CTA — user decides the portion before it counts toward daily totals.
+        GradientButton(
+            text = "Catat Konsumsi",
+            onClick = onConsumeClick,
+            leadingIcon = Icons.Filled.Restaurant,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        // Nutrient bars — full breakdown of every analysed nutrient.
+        val detailNutrients = analysis.allNutrients.ifEmpty { analysis.warnings }
+        if (detailNutrients.isNotEmpty()) {
+            SoftCard(modifier = Modifier.fillMaxWidth()) {
+                Text("Detail Nutrisi", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "Per sajian ${product.servingSize.format1()}g",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(14.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    detailNutrients.forEach { w ->
                         NutrientBar(
-                            label        = warning.nutrientName,
-                            value        = warning.valuePerServing,
-                            unit         = warning.unit,
-                            percentDaily = warning.percentDailyValue,
-                            status       = warning.status
+                            label = w.nutrientName,
+                            value = w.valuePerServing,
+                            unit = w.unit,
+                            percentDaily = w.percentDailyValue,
+                            status = w.status
                         )
                     }
                 }
             }
         }
 
-        // ── Peringatan ───────────────────────────────────────────────────────
+        // Warnings
         if (analysis.warningMessages.isNotEmpty()) {
-            Card(
+            SoftCard(
                 modifier = Modifier.fillMaxWidth(),
-                colors   = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer
-                )
+                containerColor = MaterialTheme.colorScheme.errorContainer
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.WarningAmber,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(Modifier.size(8.dp))
                     Text(
                         "Peringatan",
-                        style = MaterialTheme.typography.titleSmall,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onErrorContainer
                     )
-                    Spacer(Modifier.height(8.dp))
-                    analysis.warningMessages.forEach { msg ->
-                        Text(
-                            "• $msg",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                    }
                 }
-            }
-        }
-
-        // ── Saran AI ─────────────────────────────────────────────────────────
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors   = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer
-            )
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    verticalAlignment     = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Outlined.AutoAwesome,
-                        contentDescription = null,
-                        tint               = MaterialTheme.colorScheme.onTertiaryContainer,
-                        modifier           = Modifier.size(18.dp)
-                    )
-                    Text(
-                        "Saran AI",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                }
-
                 Spacer(Modifier.height(8.dp))
-
-                if (isAiLoading) {
-                    Row(
-                        verticalAlignment     = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier  = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color     = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                        Text(
-                            "Sedang menganalisis...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                    }
-                } else {
+                analysis.warningMessages.forEach { msg ->
                     Text(
-                        text  = analysis.aiSuggestion ?: "Saran AI tidak tersedia.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                        "• $msg",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
                     )
                 }
             }
         }
+
+        // AI suggestion / info
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(AppGradients.brand)
+                .padding(18.dp)
+        ) {
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = Color.White)
+                Spacer(Modifier.size(12.dp))
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Saran AI NutriScan", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color.White)
+                    Spacer(Modifier.height(6.dp))
+                    when (ai) {
+                        is AiAdviceState.Loading -> Text(
+                            text = "Menyusun saran personal untukmu...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.92f)
+                        )
+                        is AiAdviceState.Success -> Text(
+                            text = ai.advice,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.95f)
+                        )
+                        is AiAdviceState.Error -> Column {
+                            Text(
+                                text = ai.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.92f)
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "Coba lagi",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.clickable { onRetryAi() }
+                            )
+                        }
+                        is AiAdviceState.Idle -> Text(
+                            text = "Memuat saran...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White.copy(alpha = 0.92f)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
     }
 }
