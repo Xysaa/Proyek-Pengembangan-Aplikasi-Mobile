@@ -232,7 +232,7 @@ Analisis didasarkan pada **% Angka Kecukupan Gizi (AKG)** harian yang disesuaika
 https://youtube.com/shorts/VXfonV3Ko1Q?si=O3-csVX07O6hK43Q
 
 <iframe width="720" height="405"
-src="https://www.youtube.com/embed/VXfonV3Ko1Q"
+src="docs/videos/DEMO_NUTRISCAN.mp4"
 title="Video Demo NutriScan"
 frameborder="0"
 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
