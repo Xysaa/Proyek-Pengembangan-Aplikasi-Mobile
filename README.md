@@ -226,8 +226,20 @@ Analisis didasarkan pada **% Angka Kecukupan Gizi (AKG)** harian yang disesuaika
 
 ---
 
-[![Demo NutriScan](https://img.shields.io/badge/▶%20Demo%20Video-Google%20Drive-blue?style=for-the-badge&logo=google-drive)](https://drive.google.com/file/d/1RXEF24xgiuptpOwfNTZz1h-6iBXPDWQD/view?usp=sharing)
+## 🎥 Video Demo Aplikasi
 
+**URL Video YouTube:**  
+https://youtube.com/shorts/VXfonV3Ko1Q?si=O3-csVX07O6hK43Q
+
+<iframe width="720" height="405"
+src="https://www.youtube.com/embed/VXfonV3Ko1Q"
+title="Video Demo NutriScan"
+frameborder="0"
+allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+allowfullscreen>
+</iframe>
+
+---
 ## 📊 Coverage Report
 
 <p align="center">
