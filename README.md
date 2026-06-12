@@ -243,8 +243,8 @@ Analisis didasarkan pada **% Angka Kecukupan Gizi (AKG)** harian yang disesuaika
 ## 🎥 Demo Aplikasi
 
 <p align="center">
-  <a href="https://youtube.com/shorts/VXfonV3Ko1Q?si=O3-csVX07O6hK43Q">
-    <img src="https://img.youtube.com/vi/VXfonV3Ko1Q/maxresdefault.jpg" alt="Demo NutriScan" width="480"/>
+  <a href="https://youtube.com/shorts/Ls1inti81Ig?feature=share">
+    <img src="https://img.youtube.com/vi/Ls1inti81Ig/maxresdefault.jpg" alt="Demo NutriScan" width="480"/>
   </a>
   <br/>
   <sub>▶️ Klik thumbnail untuk menonton demo di YouTube</sub>
