@@ -222,7 +222,7 @@ cp local.properties.example local.properties
 - **Docs:** https://openfoodfacts.github.io/openfoodfacts-server/api/
 
 ### Gemini API
-- **Model:** `gemini-2.0-flash` (gratis tier)
+- **Model:** `gemini-2.5-flash-lite` (gratis tier)
 - **Digunakan untuk:** Generate saran konsumsi berbasis profil + data nutrisi
 
 ---
