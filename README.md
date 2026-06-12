@@ -1,7 +1,7 @@
 # 🥗 NutriScan
 
 <p align="center">
-  <img src="docs/images/logo.png" alt="NutriScan Logo" width="120"/>
+  <img src="docs/images/logo_nutriscan.png" alt="NutriScan Logo" width="120"/>
 </p>
 
 <p align="center">
